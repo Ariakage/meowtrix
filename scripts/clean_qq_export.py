@@ -15,6 +15,11 @@ Mapping & cleaning rules:
     * text/emoji/face elements contribute their literal text; image/video
       elements become ``[图片]`` / ``[视频]`` placeholders so discourse
       structure is preserved for a text-only model.
+    * On the assistant side placeholders are stripped by default
+      (--self-media strip): a text model cannot actually send images, so
+      emitting "[图片]" is dead text. Turns left empty are dropped and
+      neighbours re-merged. Peer-side placeholders are always kept as
+      context markers.
     * Scenes from group chats are skipped by default (non-self senders are
       multiple speakers); pass --include-groups to keep them with
       ``"name: "`` speaker prefixes on user turns.
@@ -38,30 +43,40 @@ from pathlib import Path
 
 SELF_PREFIX = "Ariakage"
 PLACEHOLDERS = {"image": "[图片]", "video": "[视频]"}
+# Literal markers the text-only export embeds in msg["text"]; a text-only
+# model cannot produce any of these, so they are stripped on self turns.
+SELF_MEDIA_MARKERS = ("[图片]", "[视频]", "[文件]", "[表情]", "[无内容/已撤回]")
+SELF_MEDIA_ELEMENTS = {"image", "video", "emoji", "face"}
 
 
-def message_text(msg: dict) -> str:
+def message_text(msg: dict, strip_media: bool = False) -> str:
     parts = []
     for el in msg.get("elements") or []:
         etype = el.get("type")
-        if etype in ("text", "emoji", "face"):
-            parts.append(el.get("text") or el.get("name") or "")
-        elif etype in PLACEHOLDERS:
-            parts.append(PLACEHOLDERS[etype])
+        if etype == "text":
+            parts.append(el.get("text") or "")
+        elif etype in SELF_MEDIA_ELEMENTS or etype in PLACEHOLDERS:
+            if not strip_media:
+                parts.append(el.get("text") or el.get("name") or PLACEHOLDERS.get(etype, ""))
     text = "".join(parts).strip()
     if not text:
+        # Text-only exports carry content in msg["text"] with no elements.
         text = (msg.get("text") or "").strip()
+    if strip_media:
+        for marker in SELF_MEDIA_MARKERS:
+            text = text.replace(marker, "")
+        text = text.strip()
     return text
 
 
-def scene_to_turns(scene: dict, is_group: bool) -> list[dict]:
+def scene_to_turns(scene: dict, is_group: bool, self_media: str) -> list[dict]:
     """Flatten a scene into merged role turns; may be empty."""
     turns: list[dict] = []
     for msg in scene.get("messages") or []:
-        text = message_text(msg)
+        is_self = (msg.get("name") or "").startswith(SELF_PREFIX)
+        text = message_text(msg, strip_media=is_self and self_media == "strip")
         if not text:
             continue
-        is_self = (msg.get("name") or "").startswith(SELF_PREFIX)
         role = "assistant" if is_self else "user"
         if is_group and role == "user":
             text = f"{msg.get('name') or 'peer'}: {text}"
@@ -107,6 +122,12 @@ def main() -> None:
     ap.add_argument("--max-turns", type=int, default=24)
     ap.add_argument("--include-groups", action="store_true")
     ap.add_argument(
+        "--self-media",
+        choices=["keep", "strip"],
+        default="strip",
+        help="keep or strip [图片]/[视频] placeholders on assistant turns",
+    )
+    ap.add_argument(
         "--min-chars",
         type=int,
         default=1,
@@ -126,7 +147,7 @@ def main() -> None:
             if is_group and not args.include_groups:
                 stats["skipped_group"] += 1
                 continue
-            turns = scene_to_turns(scene, is_group)
+            turns = scene_to_turns(scene, is_group, args.self_media)
             stats["turns_raw"] += len(turns)
             if args.min_chars > 1:
                 turns = merge_adjacent([t for t in turns if len(t["content"]) >= args.min_chars])
