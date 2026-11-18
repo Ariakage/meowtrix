@@ -1,0 +1,45 @@
+# ---- Python / uv ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+.env.*
+
+# ---- Tooling ----
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.DS_Store
+
+# ---- Training artifacts ----
+outputs/
+runs/
+checkpoints/
+wandb/
+mlruns/
+*.ckpt
+
+# ---- Model weights (hosted on Hugging Face, never committed) ----
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+exported/
+hf_cache/
+
+# ---- Data (full datasets are hosted externally; keep only tiny samples) ----
+data/*.jsonl
+!data/sample_train.jsonl
+data/raw/
+data/processed/
+
+# ---- Eval results ----
+eval/results/

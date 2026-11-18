@@ -1,0 +1,37 @@
+# Stage 2 — Persona & CoT: multi-turn catgirl-persona dialogue whose assistant
+# turns keep compact <think>...</think> inner monologue.
+
+stage: persona
+
+model:
+  # Continue from the stage-1 LoRA or the merged annealed model.
+  model_path: outputs/stage1-annealing
+  wrap_recurrent: true
+  num_loops: 3
+  torch_dtype: bfloat16
+
+data:
+  train_file: data/persona.jsonl     # see data/sample_train.jsonl for format
+  max_length: 2048
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: all-linear
+  modules_to_save: [loop_gates]
+
+trainer:
+  output_dir: outputs/stage2-persona
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 8.0e-5
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+  logging_steps: 10
+  save_strategy: epoch
+  bf16: true
+  gradient_checkpointing: true
+  assistant_only_loss: true           # only learn assistant turns
+  seed: 42

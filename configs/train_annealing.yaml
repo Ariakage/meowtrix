@@ -1,0 +1,40 @@
+# Stage 1 — Annealing: align the recurrent-depth wrapper's latent-trajectory
+# distribution with the pretrained backbone before persona training.
+#
+# Runs on CUDA, Apple Silicon (mps) or CPU via device: auto.
+
+stage: annealing
+
+model:
+  # An exported Meowtrix dir, the abliterated ckpt, or the raw base repo id.
+  model_path: outputs/abliterated
+  # Wrap a vanilla checkpoint with MeowtrixConfig when it is not model_type=meowtrix.
+  wrap_recurrent: true
+  num_loops: 3
+  torch_dtype: bfloat16
+
+data:
+  train_file: data/annealing.jsonl   # full corpus lives on HF, see README
+  max_length: 2048
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: all-linear          # every linear projection
+  modules_to_save: [loop_gates]       # unfreeze recurrent residual gates
+
+trainer:
+  output_dir: outputs/stage1-annealing
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 1.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+  logging_steps: 10
+  save_strategy: epoch
+  bf16: true
+  gradient_checkpointing: true
+  assistant_only_loss: false
+  seed: 42
