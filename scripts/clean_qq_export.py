@@ -38,6 +38,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -47,6 +48,8 @@ PLACEHOLDERS = {"image": "[图片]", "video": "[视频]"}
 # model cannot produce any of these, so they are stripped on self turns.
 SELF_MEDIA_MARKERS = ("[图片]", "[视频]", "[文件]", "[表情]", "[无内容/已撤回]")
 SELF_MEDIA_ELEMENTS = {"image", "video", "emoji", "face"}
+# A turn consisting solely of bracketed markers carries no learnable text.
+MARKER_ONLY_RE = re.compile(r"^(?:\s*\[[^\[\]]{1,12}\]\s*)+$")
 
 
 def message_text(msg: dict, strip_media: bool = False) -> str:
@@ -69,13 +72,15 @@ def message_text(msg: dict, strip_media: bool = False) -> str:
     return text
 
 
-def scene_to_turns(scene: dict, is_group: bool, self_media: str) -> list[dict]:
+def scene_to_turns(
+    scene: dict, is_group: bool, self_media: str, drop_marker_turns: bool = True
+) -> list[dict]:
     """Flatten a scene into merged role turns; may be empty."""
     turns: list[dict] = []
     for msg in scene.get("messages") or []:
         is_self = (msg.get("name") or "").startswith(SELF_PREFIX)
         text = message_text(msg, strip_media=is_self and self_media == "strip")
-        if not text:
+        if not text or (drop_marker_turns and MARKER_ONLY_RE.match(text)):
             continue
         role = "assistant" if is_self else "user"
         if is_group and role == "user":
@@ -128,6 +133,12 @@ def main() -> None:
         help="keep or strip [图片]/[视频] placeholders on assistant turns",
     )
     ap.add_argument(
+        "--drop-marker-turns",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="drop turns that are only bracketed markers (dead content)",
+    )
+    ap.add_argument(
         "--min-chars",
         type=int,
         default=1,
@@ -147,7 +158,7 @@ def main() -> None:
             if is_group and not args.include_groups:
                 stats["skipped_group"] += 1
                 continue
-            turns = scene_to_turns(scene, is_group, args.self_media)
+            turns = scene_to_turns(scene, is_group, args.self_media, args.drop_marker_turns)
             stats["turns_raw"] += len(turns)
             if args.min_chars > 1:
                 turns = merge_adjacent([t for t in turns if len(t["content"]) >= args.min_chars])
