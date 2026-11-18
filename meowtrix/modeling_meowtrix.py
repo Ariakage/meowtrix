@@ -24,6 +24,16 @@ from transformers import AutoConfig, AutoModelForCausalLM, PreTrainedModel
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+try:  # transformers >= 4.56 mask builders used by hybrid (DeltaNet + GQA) stacks
+    from transformers.masking_utils import (
+        create_causal_mask,
+        create_recurrent_attention_mask,
+    )
+
+    _HAS_MASKING_UTILS = True
+except ImportError:  # pragma: no cover - older transformers
+    _HAS_MASKING_UTILS = False
+
 try:  # installed package layout
     from .configuration_meowtrix import MeowtrixConfig
 except ImportError:  # flat HF remote-code layout
@@ -100,12 +110,17 @@ def _filter_kwargs(fn, kwargs: dict) -> dict:
 
 
 def _looks_linear_attention(layer: nn.Module) -> bool:
-    """Heuristic: Gated DeltaNet / linear-attention sub-layers.
+    """Whether a decoder layer is a linear-attention (Gated DeltaNet) layer.
 
-    Hybrid Qwen stacks feed a 2D padding mask (not a 4D causal mask) to
-    linear-attention layers. Verified against Qwen3-Next conventions; re-check
-    against the released Qwen3.5 modeling code.
+    Resolution order: the ``block_type`` attribute used by the released
+    Qwen3.5 stack, then presence of a ``linear_attn`` submodule, then a
+    name-based heuristic for other hybrid stacks.
     """
+    block_type = getattr(layer, "block_type", None)
+    if isinstance(block_type, str):
+        return block_type == "linear_attention"
+    if hasattr(layer, "linear_attn"):
+        return True
     text = f"{type(layer).__name__} {getattr(layer, 'attention_type', '')}"
     text = text.lower()
     return any(k in text for k in ("delta", "linear_attn", "linear_attention", "mamba"))
@@ -260,10 +275,13 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
             raise ValueError(f"num_loops must be in [1, {self.config.max_loops}]")
         self.config.num_loops = int(num_loops)
 
-    def _layer_mask(self, layer, causal_mask_4d, padding_mask_2d):
-        if _looks_linear_attention(layer):
-            return padding_mask_2d
-        return causal_mask_4d
+    def _layer_mask(self, layer, mask_mapping: dict):
+        block_type = getattr(layer, "block_type", None)
+        if block_type is None:
+            block_type = "linear_attention" if _looks_linear_attention(layer) else "full_attention"
+        if block_type not in mask_mapping:
+            block_type = "full_attention"
+        return mask_mapping[block_type]
 
     def _run_layer(
         self,
@@ -271,19 +289,18 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
         hidden: torch.Tensor,
         *,
         past_key_values,
-        write_cache: bool,
+        use_cache: bool,
         position_ids,
         cache_position,
-        causal_mask_4d,
-        padding_mask_2d,
+        mask_mapping,
         position_embeddings,
     ) -> torch.Tensor:
         kwargs = {
-            "attention_mask": self._layer_mask(layer, causal_mask_4d, padding_mask_2d),
+            "attention_mask": self._layer_mask(layer, mask_mapping),
             "position_ids": position_ids,
             "past_key_value": past_key_values,
             "past_key_values": past_key_values,
-            "use_cache": write_cache,
+            "use_cache": use_cache,
             "cache_position": cache_position,
             "position_embeddings": position_embeddings,
         }
@@ -349,12 +366,35 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask_4d = self._causal_mask(attention_mask, bsz, seq_len, past_len, device, dtype)
-        padding_mask_2d = (
-            attention_mask
-            if attention_mask is not None
-            else torch.ones(bsz, past_len + seq_len, device=device, dtype=dtype)
-        )
+        # Per-layer-type masks, mirroring the stock hybrid forward:
+        # full_attention layers get a causal mask, linear_attention layers get
+        # the 2D padding mask via create_recurrent_attention_mask (or None).
+        if _HAS_MASKING_UTILS:
+            mask_kwargs = {
+                "config": self.backbone.config,
+                "inputs_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+            }
+            mask_mapping = {
+                "full_attention": create_causal_mask(**mask_kwargs),
+                "linear_attention": create_recurrent_attention_mask(**mask_kwargs),
+            }
+        else:
+            causal_mask_4d = self._causal_mask(
+                attention_mask, bsz, seq_len, past_len, device, dtype
+            )
+            padding_mask_2d = (
+                attention_mask
+                if attention_mask is not None
+                else torch.ones(bsz, past_len + seq_len, device=device, dtype=dtype)
+            )
+            mask_mapping = {
+                "full_attention": causal_mask_4d,
+                "linear_attention": padding_mask_2d,
+            }
+
         position_embeddings = None
         rotary = getattr(stack, "rotary_emb", None)
         if rotary is not None:
@@ -367,31 +407,36 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
 
         loop_hiddens: list[torch.Tensor] = []
 
-        def run_span(lo: int, hi: int, h, write_cache: bool):
+        def run_span(lo: int, hi: int, h, cache, span_use_cache: bool):
             for i in range(lo, hi):
                 h = self._run_layer(
                     layers[i],
                     h,
-                    past_key_values=past_key_values,
-                    write_cache=write_cache and use_cache,
+                    past_key_values=cache,
+                    use_cache=span_use_cache,
                     position_ids=position_ids,
                     cache_position=cache_position,
-                    causal_mask_4d=causal_mask_4d,
-                    padding_mask_2d=padding_mask_2d,
+                    mask_mapping=mask_mapping,
                     position_embeddings=position_embeddings,
                 )
             return h
 
-        hidden = run_span(0, start, inputs_embeds, write_cache=True)
+        hidden = run_span(0, start, inputs_embeds, past_key_values, use_cache)
         for loop_idx in range(1, num_loops + 1):
-            refined = run_span(start, end, hidden, write_cache=(loop_idx == 1))
             if loop_idx == 1:
-                hidden = refined
+                # First pass runs like the stock stack and writes KV /
+                # DeltaNet states into the cache for autoregressive decode.
+                hidden = run_span(start, end, hidden, past_key_values, use_cache)
             else:
+                # Refinement loops are fully detached latent passes: the
+                # stock hybrid cache has no read-only mode (attention
+                # update() always appends), so the cache is dropped entirely
+                # and each loop re-encodes the refined hidden state.
+                refined = run_span(start, end, hidden, None, False)
                 hidden = self.loop_gates(hidden, refined, loop_idx)
             if output_loop_hiddens:
                 loop_hiddens.append(hidden)
-        hidden = run_span(end, n_layers, hidden, write_cache=True)
+        hidden = run_span(end, n_layers, hidden, past_key_values, use_cache)
         hidden = stack.norm(hidden)
 
         slice_indices = (

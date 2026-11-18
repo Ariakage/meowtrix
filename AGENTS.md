@@ -30,13 +30,13 @@ checks were run unless they were.
 | Area | Status |
 | --- | --- |
 | Repo structure, configs, Justfile, uv env | Implemented |
-| `MeowtrixConfig` | Implemented |
-| `MeowtrixForCausalLM` forward / recurrent span / `loop_gates` | **Scaffold** — follows the current transformers decoder-layer calling convention via signature probing; mask handling for linear-attention layers is a heuristic (`_looks_linear_attention`). Must be validated against released Qwen3.5-0.8B weights before publishing. |
-| `generate()` path | Scaffold — standard `GenerationMixin` plumbing + delegated `prepare_inputs_for_generation`; verify KV/DeltaNet cache semantics for loops ≥ 2 on real hardware. |
-| `abliterate.py` | Scaffold — mean-diff refusal direction + output-space projection; untested end-to-end on real weights. |
-| `scripts/train.py` | Scaffold — TRL `SFTTrainer` + PEFT LoRA; `assistant_only_loss` requires a chat template with `{% generation %}` markers, disable it if the tokenizer template lacks them. |
-| `scripts/export_hf.py` | Scaffold — untested against a real checkpoint. |
-| `eval/*`, `serve/app.py` | Scaffold — API streaming (`stream=true`) is TODO. |
+| `MeowtrixConfig` | Implemented — `__getattr__` falls back to `backbone_config` for hybrid-cache fields; verified on real weights. |
+| `MeowtrixForCausalLM` forward / recurrent span / `loop_gates` | Verified on `Qwen/Qwen3.5-0.8B` (CPU, bf16): `num_loops=1` generate() output is byte-identical to the stock `Qwen3_5ForCausalLM`; `num_loops=3` yields coherent, diverging text. Masks are built via `create_causal_mask` / `create_recurrent_attention_mask` per `block_type`; refinement loops (≥2) run fully detached (`past_key_values=None`) because the hybrid cache has no read-only mode (`update()` always appends). |
+| `generate()` path | Verified — 40-token decode incl. DeltaNet cached decode path; explicit `GenerationMixin` inheritance for transformers ≥4.50. Requires `flash-linear-attention`/`causal_conv1d` for fast kernels, otherwise falls back to reference PyTorch impls. |
+| `abliterate.py` | Verified end-to-end on real weights — 48 projection weights ablated (`out_proj`/`o_proj`/`down_proj` across 24 layers), checkpoint saves + regenerates; `enable_thinking=True` confirmed in the chat template. |
+| `scripts/train.py` | Scaffold — TRL `SFTTrainer` + PEFT LoRA; `assistant_only_loss` requires a chat template with `{% generation %}` markers, disable it if the tokenizer template lacks them. Not yet run end-to-end. |
+| `scripts/export_hf.py` | Verified — export dir loads via `trust_remote_code=True` (321 tensors incl. `loop_gates`), generates coherently. |
+| `eval/*`, `serve/app.py` | Scaffold — API streaming (`stream=true`) is TODO; eval scripts not yet run on real weights. |
 
 ## Environment
 
@@ -80,8 +80,9 @@ just eval-loops / just eval-hidden
 
 - Loop-gate mixing form: currently `h += g·(refined − h)` per extra loop;
   alternatives (full gated replacement, per-layer gates) are open for ablation.
-- Whether refinement loops should attend over the loop-1 KV cache (current
-  choice: read yes, write no) vs. fully detached latent passes.
+- Refinement loops currently run fully detached (no cache at all) since the
+  hybrid cache lacks a read-only mode; an alternative worth evaluating is
+  attending over the loop-1 KV/state snapshots read-only.
 - Recurrent span boundary (8–16) vs. shifting it across the 4-layer cycles.
 - Whether `num_loops` during training should be fixed, randomized per batch,
   or annealed.
