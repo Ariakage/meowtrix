@@ -91,6 +91,15 @@ def main() -> None:
             torch_dtype=dtype,
             num_loops=model_cfg.get("num_loops"),
         )
+    # Keep loop_gates in fp32: bf16 Adam updates (~1e-4) fall below the
+    # half-ulp at 0.05 and round back, so the gates silently never train.
+    lg = getattr(model, "loop_gates", None)
+    if lg is not None:
+        target = getattr(lg, "modules_to_save", lg)
+        target = getattr(target, "default", target)
+        target.gates.data = target.gates.data.float()
+
+    if adapter_dir is None:
         peft_config = LoraConfig(
             r=lora_cfg.get("r", 16),
             lora_alpha=lora_cfg.get("lora_alpha", 32),

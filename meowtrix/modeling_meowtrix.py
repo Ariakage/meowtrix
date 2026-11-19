@@ -76,8 +76,13 @@ class LoopGates(nn.Module):
         return self.gates[loop_index - 1]
 
     def forward(self, base: torch.Tensor, refined: torch.Tensor, loop_index: int):
-        """Mix a refined hidden state back into the residual stream."""
-        return base + self.gate(loop_index) * (refined - base)
+        """Mix a refined hidden state back into the residual stream.
+
+        The parameter may be kept in fp32 during training (sub-ulp Adam
+        updates would otherwise round back to init under bf16), so the gate
+        is cast to the compute dtype here instead of in-place.
+        """
+        return base + self.gate(loop_index).to(base.dtype) * (refined - base)
 
 
 class _TrunkView(nn.Module):
