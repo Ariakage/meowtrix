@@ -116,6 +116,10 @@ def main() -> None:
 
     device = pick_device(args.device)
     dtype = getattr(torch, args.dtype)
+    if device == "mps":
+        from meowtrix.kernels import enable_metal_kernels
+
+        enable_metal_kernels()
     print(f"[benchmark] device={device} dtype={dtype} model={args.model}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)

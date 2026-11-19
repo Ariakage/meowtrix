@@ -177,6 +177,10 @@ def main() -> None:
     ap.add_argument("--dtype", default="bfloat16")
     args = ap.parse_args()
     args.device = pick_device(args.device)
+    if args.device == "mps":
+        from meowtrix.kernels import enable_metal_kernels
+
+        enable_metal_kernels()
 
     ckpts = sorted(
         (d for d in args.ckpt_dir.glob("checkpoint-*") if d.is_dir()),

@@ -9,6 +9,7 @@ model:
   wrap_recurrent: true
   num_loops: 3
   torch_dtype: bfloat16
+  metal_kernels: true  # fused Metal conv1d on MPS; no-op elsewhere
 
 data:
   train_file: data/processed/stage2_mix.jsonl  # see data/sample_train.jsonl for format

@@ -41,6 +41,11 @@ def main() -> None:
     dtype = getattr(torch, model_cfg.get("torch_dtype", "bfloat16"))
     model_path = model_cfg["model_path"]
 
+    if model_cfg.get("metal_kernels", True):
+        from meowtrix.kernels import enable_metal_kernels
+
+        enable_metal_kernels()
+
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
