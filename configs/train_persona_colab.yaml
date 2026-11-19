@@ -38,5 +38,6 @@ trainer:
   bf16: true
   fp16: false
   gradient_checkpointing: true
+  group_by_length: true   # pair similar lengths → minimal padding waste
   assistant_only_loss: true
   seed: 42

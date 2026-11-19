@@ -119,6 +119,7 @@ def main() -> None:
         bf16=tr_cfg.get("bf16", True),
         fp16=tr_cfg.get("fp16", False),
         gradient_checkpointing=tr_cfg.get("gradient_checkpointing", True),
+        group_by_length=tr_cfg.get("group_by_length", False),
         seed=tr_cfg.get("seed", 42),
         max_length=data_cfg.get("max_length", 2048),
         packing=False,
