@@ -119,13 +119,14 @@ def main() -> None:
         bf16=tr_cfg.get("bf16", True),
         fp16=tr_cfg.get("fp16", False),
         gradient_checkpointing=tr_cfg.get("gradient_checkpointing", True),
-        group_by_length=tr_cfg.get("group_by_length", False),
         seed=tr_cfg.get("seed", 42),
         max_length=data_cfg.get("max_length", 2048),
         packing=False,
         assistant_only_loss=tr_cfg.get("assistant_only_loss", False),
         report_to=tr_cfg.get("report_to", "none"),
     )
+    if tr_cfg.get("group_by_length"):
+        sft_config.group_by_length = True
 
     trainer = SFTTrainer(
         model=model,
