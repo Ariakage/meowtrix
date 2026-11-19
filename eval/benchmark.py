@@ -92,6 +92,7 @@ def load_problems(dataset: str, limit: int) -> list[dict]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
+    ap.add_argument("--adapter", default=None, help="LoRA adapter dir to merge onto the base")
     ap.add_argument(
         "--wrapper",
         choices=["auto", "meowtrix", "stock"],
@@ -150,6 +151,10 @@ def main() -> None:
             args.model, dtype=dtype, trust_remote_code=True
         )
         model.to(device)
+    if args.adapter:
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, args.adapter)
     model.eval()
 
     is_meowtrix = hasattr(model, "loop_gates")
