@@ -11,8 +11,8 @@ model:
   torch_dtype: bfloat16
 
 data:
-  train_file: data/persona.jsonl     # see data/sample_train.jsonl for format
-  max_length: 2048
+  train_file: data/processed/stage2_mix.jsonl  # see data/sample_train.jsonl for format
+  max_length: 4096  # think distillations run long; keep </think>+answer intact
 
 lora:
   r: 16
