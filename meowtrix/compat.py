@@ -25,3 +25,48 @@ def patch_trl_chunked_logprob() -> bool:
         return False
     chunked_logprob._MM_OUT_DTYPE = False
     return True
+
+
+def patch_cudnn_conv1d() -> bool:
+    """Wrap the transformers depthwise ``causal_conv1d_fn`` fallback so a cuDNN
+    engine-search failure (``GET was unable to find an engine``, seen on T4 when
+    refinement loops re-run the recurrent span) retries once with cuDNN
+    disabled, which dispatches to the native CUDA conv. Returns True if any
+    module was patched."""
+    import functools
+    import importlib
+
+    try:
+        import torch
+    except ImportError:
+        return False
+    if not torch.cuda.is_available():
+        return False
+
+    patched = False
+    for mod_name in (
+        "transformers.models.qwen3_5.modeling_qwen3_5",
+        "transformers.models.qwen3_next.modeling_qwen3_next",
+    ):
+        try:
+            mod = importlib.import_module(mod_name)
+            orig = getattr(mod, "causal_conv1d_fn", None)
+        except ImportError:
+            continue
+        if orig is None or getattr(orig, "_meowtrix_cudnn_retry", False):
+            continue
+
+        @functools.wraps(orig)
+        def wrapped(*args, _orig=orig, **kwargs):
+            try:
+                return _orig(*args, **kwargs)
+            except RuntimeError as e:
+                if "engine" not in str(e):
+                    raise
+                with torch.backends.cudnn.flags(enabled=False):
+                    return _orig(*args, **kwargs)
+
+        wrapped._meowtrix_cudnn_retry = True
+        mod.causal_conv1d_fn = wrapped
+        patched = True
+    return patched

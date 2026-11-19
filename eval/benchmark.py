@@ -120,6 +120,11 @@ def main() -> None:
         from meowtrix.kernels import enable_metal_kernels
 
         enable_metal_kernels()
+    elif device == "cuda":
+        from meowtrix.compat import patch_cudnn_conv1d
+
+        if patch_cudnn_conv1d():
+            print("[compat] cudnn conv1d retry patch enabled")
     print(f"[benchmark] device={device} dtype={dtype} model={args.model}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)

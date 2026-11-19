@@ -181,6 +181,10 @@ def main() -> None:
         from meowtrix.kernels import enable_metal_kernels
 
         enable_metal_kernels()
+    elif args.device == "cuda":
+        from meowtrix.compat import patch_cudnn_conv1d
+
+        patch_cudnn_conv1d()
 
     ckpts = sorted(
         (d for d in args.ckpt_dir.glob("epoch-*") if d.is_dir()),
