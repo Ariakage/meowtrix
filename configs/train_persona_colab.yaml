@@ -1,6 +1,6 @@
-# Stage 2 — Colab/T4 variant of train_persona.yaml.
-# Differences: fp16 instead of bf16 (T4/Turing has no bf16 tensor cores,
-# fp16 gets TC acceleration + Trainer auto GradScaler).
+# Stage 2 — Colab variant of train_persona.yaml.
+# bf16 end-to-end: torch>=2.14 optimizers own AMP unscaling and reject
+# fp16-grad unscale on fp16/bf16-param mixes; bf16 needs no GradScaler.
 
 stage: persona
 
@@ -8,7 +8,7 @@ model:
   model_path: Qwen/Qwen3.5-0.8B
   wrap_recurrent: true
   num_loops: 3
-  torch_dtype: float16    # fp16 end-to-end: GradScaler can't unscale bf16 grads
+  torch_dtype: bfloat16
   metal_kernels: true     # no-op on CUDA
 
 data:
@@ -35,8 +35,8 @@ trainer:
   save_steps: 50
   save_total_limit: 4
   save_epoch_checkpoints: true
-  bf16: false
-  fp16: true
+  bf16: true
+  fp16: false
   gradient_checkpointing: true
   assistant_only_loss: true
   seed: 42
