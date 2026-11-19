@@ -183,6 +183,9 @@ def main() -> None:
         enable_metal_kernels()
 
     ckpts = sorted(
+        (d for d in args.ckpt_dir.glob("epoch-*") if d.is_dir()),
+        key=lambda d: int(d.name.split("-")[1]),
+    ) or sorted(
         (d for d in args.ckpt_dir.glob("checkpoint-*") if d.is_dir()),
         key=lambda d: int(d.name.split("-")[1]),
     )

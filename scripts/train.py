@@ -112,6 +112,7 @@ def main() -> None:
         save_steps=tr_cfg.get("save_steps", 500),
         save_total_limit=tr_cfg.get("save_total_limit"),
         bf16=tr_cfg.get("bf16", True),
+        fp16=tr_cfg.get("fp16", False),
         gradient_checkpointing=tr_cfg.get("gradient_checkpointing", True),
         seed=tr_cfg.get("seed", 42),
         max_length=data_cfg.get("max_length", 2048),
@@ -127,6 +128,24 @@ def main() -> None:
         processing_class=tokenizer,
         peft_config=peft_config,
     )
+
+    if tr_cfg.get("save_epoch_checkpoints"):
+        from transformers import TrainerCallback
+
+        class _EpochSaver(TrainerCallback):
+            """Save adapter weights at each epoch boundary for per-epoch eval.
+
+            Writes epoch-{N}/ dirs that do not count toward save_total_limit
+            rotation (no optimizer state — eval-only artifacts)."""
+
+            def on_epoch_end(self, args, state, control, **kw):
+                ep = round(state.epoch)
+                out = Path(args.output_dir) / f"epoch-{ep}"
+                trainer.save_model(out)
+                print(f"[epoch-saver] epoch {ep} → {out}")
+
+        trainer.add_callback(_EpochSaver())
+
     trainer.train(resume_from_checkpoint=args.resume)
     trainer.save_model(sft_config.output_dir)
     tokenizer.save_pretrained(sft_config.output_dir)

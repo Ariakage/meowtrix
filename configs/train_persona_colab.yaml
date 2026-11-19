@@ -1,0 +1,42 @@
+# Stage 2 — Colab/T4 variant of train_persona.yaml.
+# Differences: fp16 instead of bf16 (T4/Turing has no bf16 tensor cores,
+# fp16 gets TC acceleration + Trainer auto GradScaler).
+
+stage: persona
+
+model:
+  model_path: Qwen/Qwen3.5-0.8B
+  wrap_recurrent: true
+  num_loops: 3
+  torch_dtype: bfloat16   # weights load bf16; Trainer casts compute to fp16
+  metal_kernels: true     # no-op on CUDA
+
+data:
+  train_file: data/processed/stage2_mix.jsonl
+  max_length: 2048
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: all-linear
+  modules_to_save: [loop_gates]
+
+trainer:
+  output_dir: outputs/stage2-persona
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 8.0e-5
+  lr_scheduler_type: cosine
+  warmup_steps: 20
+  logging_steps: 10
+  save_strategy: steps
+  save_steps: 50
+  save_total_limit: 4
+  save_epoch_checkpoints: true
+  bf16: false
+  fp16: true
+  gradient_checkpointing: true
+  assistant_only_loss: true
+  seed: 42

@@ -35,6 +35,7 @@ trainer:
   save_strategy: steps
   save_steps: 50        # ~15-25min cadence; Colab sessions can die anytime
   save_total_limit: 4   # keep last 4 step checkpoints
+  save_epoch_checkpoints: true  # epoch-N/ adapter snapshots for per-epoch eval
   bf16: true
   gradient_checkpointing: true
   assistant_only_loss: true           # only learn assistant turns
