@@ -8,7 +8,7 @@ model:
   model_path: Qwen/Qwen3.5-0.8B
   wrap_recurrent: true
   num_loops: 3
-  torch_dtype: bfloat16   # weights load bf16; Trainer casts compute to fp16
+  torch_dtype: float16    # fp16 end-to-end: GradScaler can't unscale bf16 grads
   metal_kernels: true     # no-op on CUDA
 
 data:
