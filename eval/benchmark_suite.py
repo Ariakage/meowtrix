@@ -368,7 +368,10 @@ def run_sorrybench(model, tokenizer, device, loops, args) -> dict:
         base = sampled
     records = []
     for row in base:
-        prompt = ast.literal_eval(row["turns"])[0]
+        turns = row["turns"]
+        if not isinstance(turns, list):
+            turns = ast.literal_eval(turns)
+        prompt = turns[0]
         r = generate(model, tokenizer, device, [{"role": "user", "content": prompt}],
                      args.refusal_max_new_tokens, thinking=False)
         records.append({"category": row["category"], "refused": is_refusal(r["text"]),
