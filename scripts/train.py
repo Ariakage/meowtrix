@@ -25,6 +25,14 @@ from meowtrix import load_meowtrix_model
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--config", required=True, help="stage YAML (see configs/)")
+    p.add_argument(
+        "--resume",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="CKPT",
+        help="resume training: latest checkpoint-* under output_dir, or the given dir",
+    )
     return p.parse_args()
 
 
@@ -101,6 +109,8 @@ def main() -> None:
         warmup_steps=tr_cfg.get("warmup_steps", 20),
         logging_steps=tr_cfg.get("logging_steps", 10),
         save_strategy=tr_cfg.get("save_strategy", "epoch"),
+        save_steps=tr_cfg.get("save_steps", 500),
+        save_total_limit=tr_cfg.get("save_total_limit"),
         bf16=tr_cfg.get("bf16", True),
         gradient_checkpointing=tr_cfg.get("gradient_checkpointing", True),
         seed=tr_cfg.get("seed", 42),
@@ -117,7 +127,7 @@ def main() -> None:
         processing_class=tokenizer,
         peft_config=peft_config,
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume)
     trainer.save_model(sft_config.output_dir)
     tokenizer.save_pretrained(sft_config.output_dir)
     print(f"[train] stage '{cfg.get('stage', '?')}' done → {sft_config.output_dir}")

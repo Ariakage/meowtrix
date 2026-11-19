@@ -13,7 +13,8 @@ model:
 
 data:
   train_file: data/processed/stage2_mix.jsonl  # see data/sample_train.jsonl for format
-  max_length: 4096  # think distillations run long; keep </think>+answer intact
+  max_length: 2048  # ~90% of data fits; longer think samples get truncated.
+                    # 4096 OOMed MPS swap on M4 (delta-rule intermediates).
 
 lora:
   r: 16
@@ -31,7 +32,9 @@ trainer:
   lr_scheduler_type: cosine
   warmup_steps: 20
   logging_steps: 10
-  save_strategy: epoch
+  save_strategy: steps
+  save_steps: 50        # ~15-25min cadence; Colab sessions can die anytime
+  save_total_limit: 4   # keep last 4 step checkpoints
   bf16: true
   gradient_checkpointing: true
   assistant_only_loss: true           # only learn assistant turns
