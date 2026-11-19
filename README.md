@@ -89,9 +89,9 @@ curl localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '
 | Path | Purpose |
 | --- | --- |
 | `meowtrix/` | Core package — `configuration_meowtrix.py`, `modeling_meowtrix.py`, `abliterate.py` |
-| `configs/` | Stage YAMLs (annealing / persona) + abliteration contrast prompts |
-| `scripts/` | `train.py` (TRL SFTTrainer + PEFT LoRA), `export_hf.py` (auto_map packaging), `prepare_data.py` |
-| `eval/` | `loop_ablation.py` (accuracy/latency vs. `num_loops`), `hidden_state_evolution.py` |
+| `configs/` | Stage YAMLs (annealing / persona) + abliteration contrast prompts + `personas.json` (100 persona system prompts decoupling `<think>` rigor from cat-voice replies) |
+| `scripts/` | `train.py` (TRL SFTTrainer + PEFT LoRA), `export_hf.py` (auto_map packaging), `prepare_data.py`, `clean_qq_export.py` / `label_data.py` (chat-data cleaning), `extract_sessions.py` (`<think>` distillation from local agent sessions), `mix_dataset.py` (weighted source mixing + persona injection) |
+| `eval/` | `benchmark.py` (AIME/GSM8K vs. `num_loops` + plot), `loop_ablation.py`, `hidden_state_evolution.py` |
 | `serve/` | FastAPI OpenAI Chat API (`serve/app.py`) |
 | `data/` | `sample_train.jsonl` only — full datasets & weights live on Hugging Face |
 | `Justfile` / `pyproject.toml` / `uv.lock` | uv-managed env + one-command workflows |
@@ -102,11 +102,19 @@ curl localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '
 just eval-loops --model exported/meowtrix-0.8b \
     --prompts-file eval/tasks.jsonl --loops 1,2,3
 just eval-hidden --model outputs/stage2-persona --num-loops 3
+
+# Math benchmark + figure (AIME thinking / GSM8K direct)
+just benchmark --num-loops 1 2 3 4 --aime-limit 15 --gsm8k-limit 20 \
+    --output eval/results/benchmark_loops.json
+just plot-benchmark eval/results/benchmark_loops.json
 ```
 
 `loop_ablation.py` reports accuracy and tokens/s per `num_loops`
 (test-time-compute scaling). `hidden_state_evolution.py` reports cosine
 similarity between consecutive loop outputs and the converged `loop_gates`.
+`benchmark.py` + `plot_benchmark.py` measure accuracy, per-problem latency,
+and decode throughput across `num_loops` on real datasets, writing
+`eval/results/*.json` and a matching figure.
 
 ## Notes on responsible use
 

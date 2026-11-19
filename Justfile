@@ -22,6 +22,22 @@ train CONFIG="configs/train_persona.yaml":
 prepare-data INPUT OUTPUT:
     uv run python scripts/prepare_data.py --input {{INPUT}} --output {{OUTPUT}}
 
+# Clean a QQ meow-scene export (scenes.json) into SFT chat JSONL.
+clean-qq INPUT OUTPUT="data/processed/qq_meow_scenes.jsonl" *ARGS:
+    uv run python scripts/clean_qq_export.py --input {{INPUT}} --output {{OUTPUT}} {{ARGS}}
+
+# Interactive web UI for keep/drop/edit labeling of a chat JSONL.
+label DATA="data/processed/qq_meow_scenes.jsonl" *ARGS:
+    uv run python scripts/label_data.py {{DATA}} {{ARGS}}
+
+# Distill <think> pairs from local agent session logs (claude/pi/dsh/codex/grok/opencode).
+extract-sessions *ARGS:
+    uv run python scripts/extract_sessions.py {{ARGS}}
+
+# Weighted mix of chat JSONL sources + random persona system prompts.
+mix-dataset OUTPUT *ARGS:
+    uv run python scripts/mix_dataset.py --output {{OUTPUT}} {{ARGS}}
+
 # Thinking-aware abliteration against the base or an exported checkpoint.
 abliterate *ARGS:
     uv run python -m meowtrix.abliterate --prompts configs/abliterate_prompts.yaml {{ARGS}}
@@ -41,6 +57,14 @@ eval-loops *ARGS:
 # Hidden-state evolution / loop_gates analysis.
 eval-hidden *ARGS:
     uv run python eval/hidden_state_evolution.py {{ARGS}}
+
+# Math benchmark (AIME/GSM8K) across num_loops, JSON to eval/results/.
+benchmark *ARGS:
+    uv run python eval/benchmark.py {{ARGS}}
+
+# Render benchmark JSON into the accuracy/latency/throughput figure.
+plot-benchmark RESULTS="eval/results/benchmark_loops.json":
+    uv run python eval/plot_benchmark.py {{RESULTS}}
 
 fmt:
     uvx ruff format .
