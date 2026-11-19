@@ -54,6 +54,11 @@ def main() -> None:
 
         enable_metal_kernels()
 
+    from meowtrix.compat import patch_trl_chunked_logprob
+
+    if patch_trl_chunked_logprob():
+        print("[compat] CC<8.0: TRL chunked_logprob using pure-fp32 addmm fallback")
+
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
