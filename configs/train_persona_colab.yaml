@@ -25,8 +25,8 @@ lora:
 trainer:
   output_dir: outputs/stage2-persona
   num_train_epochs: 3
-  per_device_train_batch_size: 1
-  gradient_accumulation_steps: 16
+  per_device_train_batch_size: 2   # T4 uses only ~3GB at bs=1; bs2 ~6GB
+  gradient_accumulation_steps: 8   # same effective batch (2x8=16)
   learning_rate: 8.0e-5
   lr_scheduler_type: cosine
   warmup_steps: 20
