@@ -26,7 +26,7 @@ def enable_metal_kernels() -> bool:
         return False
 
     try:
-        from meowtrix.kernels.metal import conv1d
+        from meowtrix.kernels.metal import conv1d, gdr
     except Exception as exc:  # pragma: no cover
         warnings.warn(f"meowtrix metal kernels unavailable: {exc}", stacklevel=2)
         return False
@@ -45,4 +45,5 @@ def enable_metal_kernels() -> bool:
         except ImportError:
             continue
         patched = conv1d.install(module) or patched
+        patched = gdr.install(module) or patched
     return patched

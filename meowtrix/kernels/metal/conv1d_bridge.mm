@@ -18,6 +18,10 @@
 #error "METAL_SRC_PATH must point at conv1d.metal"
 #endif
 
+#ifndef GDR_SRC_PATH
+#error "GDR_SRC_PATH must point at gdr.metal"
+#endif
+
 namespace {
 
 using at::mps::MPSStream;
@@ -47,6 +51,12 @@ id<MTLComputePipelineState> pipeline(const std::string& name, const at::Tensor& 
                                                error:&error];
     TORCH_CHECK(src != nil, "meowtrix metal conv1d: failed to read kernel source: ",
                 error.localizedDescription.UTF8String);
+    NSString* gsrc = [NSString stringWithContentsOfFile:@(GDR_SRC_PATH)
+                                             encoding:NSUTF8StringEncoding
+                                                error:&error];
+    TORCH_CHECK(gsrc != nil, "meowtrix metal gdr: failed to read kernel source: ",
+                error.localizedDescription.UTF8String);
+    src = [src stringByAppendingString:gsrc];
     MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
     if (@available(macOS 14.0, *)) {
       opts.languageVersion = MTLLanguageVersion3_1;
@@ -54,7 +64,7 @@ id<MTLComputePipelineState> pipeline(const std::string& name, const at::Tensor& 
     id<MTLDevice> device = at::mps::MPSDevice::getInstance()->device();
     library = [device newLibraryWithSource:src options:opts error:&error];
     [opts release];
-    TORCH_CHECK(library != nil, "meowtrix metal conv1d: metal compile failed: ",
+    TORCH_CHECK(library != nil, "meowtrix metal kernels: metal compile failed: ",
                 error.localizedDescription.UTF8String);
   });
 
@@ -198,10 +208,123 @@ at::Tensor conv1d_update(const at::Tensor& x,
   return out;
 }
 
+// ---- Gated delta rule -----------------------------------------------------
+
+// fp32 L2-normalized q/k rows for every (b,t,h); qn additionally scaled by
+// dk^-0.5. Inputs are [B, L, H, dk] contiguous.
+std::vector<at::Tensor> gdr_norm(const at::Tensor& q, const at::Tensor& k) {
+  const auto B = q.size(0), L = q.size(1), Hk = q.size(2), dk = q.size(3);
+  auto opts = q.options().dtype(at::kFloat);
+  auto qn = at::empty({B, L, Hk, dk}, opts);
+  auto kn = at::empty({B, L, Hk, dk}, opts);
+
+  uint32_t Hkb = (uint32_t)Hk, dkb = (uint32_t)dk;
+
+  MPSStream* stream = at::mps::getCurrentMPSStream();
+  dispatch_sync(stream->queue(), ^{
+    id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+    [enc setComputePipelineState:pipeline("gdr_qknorm_rows", q)];
+    setBuffer(enc, q, 0);
+    setBuffer(enc, k, 1);
+    setBuffer(enc, qn, 2);
+    setBuffer(enc, kn, 3);
+    [enc setBytes:&Hkb length:sizeof(Hkb) atIndex:4];
+    [enc setBytes:&dkb length:sizeof(dkb) atIndex:5];
+    MTLSize grid = MTLSizeMake((NSUInteger)Hk, (NSUInteger)(B * L), 1);
+    MTLSize tg = MTLSizeMake(32, 32, 1);
+    [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+    stream->endKernelCoalescing();
+  });
+  return {qn, kn};
+}
+
+// Single-token decode step: mutates `state` in place, returns out [B,Hv,dv].
+at::Tensor gdr_step(const at::Tensor& q,
+                    const at::Tensor& k,
+                    const at::Tensor& v,
+                    const at::Tensor& g,
+                    const at::Tensor& beta,
+                    const at::Tensor& state) {
+  const auto B = q.size(0), Hk = q.size(1), dk = q.size(2);
+  const auto Hv = v.size(1), dv = v.size(2);
+  TORCH_CHECK(dk <= 256 && dv <= 256, "gdr_step: head dims exceed 256");
+  auto out = at::empty({B, Hv, dv}, v.options());
+
+  uint32_t dkb = (uint32_t)dk, dvb = (uint32_t)dv;
+  uint32_t Hkb = (uint32_t)Hk, Hvb = (uint32_t)Hv;
+
+  MPSStream* stream = at::mps::getCurrentMPSStream();
+  dispatch_sync(stream->queue(), ^{
+    id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+    [enc setComputePipelineState:pipeline("gdr_step", q)];
+    setBuffer(enc, q, 0);
+    setBuffer(enc, k, 1);
+    setBuffer(enc, v, 2);
+    setBuffer(enc, g, 3);
+    setBuffer(enc, beta, 4);
+    setBuffer(enc, state, 5);
+    setBuffer(enc, out, 6);
+    [enc setBytes:&dkb length:sizeof(dkb) atIndex:7];
+    [enc setBytes:&dvb length:sizeof(dvb) atIndex:8];
+    [enc setBytes:&Hkb length:sizeof(Hkb) atIndex:9];
+    [enc setBytes:&Hvb length:sizeof(Hvb) atIndex:10];
+    NSUInteger threads = std::max<NSUInteger>(dk, dv);
+    MTLSize grid = MTLSizeMake(threads, (NSUInteger)Hv, (NSUInteger)B);
+    MTLSize tg = MTLSizeMake(threads, 1, 1);
+    [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+    stream->endKernelCoalescing();
+  });
+  return out;
+}
+
+// Sequential scan for prefill/inference on pre-normalized fp32 qn,kn.
+// Mutates `state` in place, returns out [B,L,Hv,dv].
+at::Tensor gdr_seq(const at::Tensor& qn,
+                   const at::Tensor& kn,
+                   const at::Tensor& v,
+                   const at::Tensor& g,
+                   const at::Tensor& beta,
+                   const at::Tensor& state) {
+  const auto B = qn.size(0), L = qn.size(1), Hk = qn.size(2), dk = qn.size(3);
+  const auto Hv = v.size(2), dv = v.size(3);
+  TORCH_CHECK(dk <= 128, "gdr_seq: dk exceeds threadgroup row capacity");
+  auto out = at::empty({B, L, Hv, dv}, v.options());
+
+  uint32_t Lb = (uint32_t)L, dkb = (uint32_t)dk, dvb = (uint32_t)dv;
+  uint32_t Hkb = (uint32_t)Hk, Hvb = (uint32_t)Hv;
+
+  MPSStream* stream = at::mps::getCurrentMPSStream();
+  dispatch_sync(stream->queue(), ^{
+    id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+    [enc setComputePipelineState:pipeline("gdr_seq", v)];
+    setBuffer(enc, qn, 0);
+    setBuffer(enc, kn, 1);
+    setBuffer(enc, v, 2);
+    setBuffer(enc, g, 3);
+    setBuffer(enc, beta, 4);
+    setBuffer(enc, state, 5);
+    setBuffer(enc, out, 6);
+    [enc setBytes:&Lb length:sizeof(Lb) atIndex:7];
+    [enc setBytes:&dkb length:sizeof(dkb) atIndex:8];
+    [enc setBytes:&dvb length:sizeof(dvb) atIndex:9];
+    [enc setBytes:&Hkb length:sizeof(Hkb) atIndex:10];
+    [enc setBytes:&Hvb length:sizeof(Hvb) atIndex:11];
+    NSUInteger nblk = (NSUInteger)((dv + 31) / 32);
+    MTLSize grid = MTLSizeMake(32, (NSUInteger)Hv * nblk, (NSUInteger)B);
+    MTLSize tg = MTLSizeMake(32, 1, 1);
+    [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+    stream->endKernelCoalescing();
+  });
+  return out;
+}
+
 }  // namespace meowtrix::metal
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("conv1d_fwd", &meowtrix::metal::conv1d_fwd, "fused causal conv1d fwd (MPS)");
   m.def("conv1d_bwd_dx", &meowtrix::metal::conv1d_bwd_dx, "fused causal conv1d dx (MPS)");
   m.def("conv1d_update", &meowtrix::metal::conv1d_update, "fused causal conv1d update (MPS)");
+  m.def("gdr_norm", &meowtrix::metal::gdr_norm, "gated delta rule qk norm (MPS)");
+  m.def("gdr_step", &meowtrix::metal::gdr_step, "gated delta rule decode step (MPS)");
+  m.def("gdr_seq", &meowtrix::metal::gdr_seq, "gated delta rule sequential scan (MPS)");
 }

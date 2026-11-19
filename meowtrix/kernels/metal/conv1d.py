@@ -33,6 +33,7 @@ def _ext():
                     "-ObjC++",
                     "-std=c++20",
                     f'-DMETAL_SRC_PATH=\\"{src_dir / "conv1d.metal"}\\"',
+                    f'-DGDR_SRC_PATH=\\"{src_dir / "gdr.metal"}\\"',
                 ],
                 extra_ldflags=["-framework", "Foundation", "-framework", "Metal"],
                 verbose=False,

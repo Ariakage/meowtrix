@@ -21,12 +21,19 @@ each 4-layer cycle = 3x Gated DeltaNet + 1x GQA) with:
   `modules_to_save: [loop_gates]`.
 - **HF export via `auto_map`** — `scripts/export_hf.py` writes config.json +
   the two `*_meowtrix.py` remote-code files next to the weights.
-- **Fused Metal kernels (MPS)** — `meowtrix/kernels/metal/` holds a
-  runtime-compiled causal conv1d (`conv1d.metal` + `conv1d_bridge.mm`,
-  ObjC++/libtorch). `meowtrix.kernels.enable_metal_kernels()` monkeypatches
-  the transformers `causal_conv1d_fn`/`causal_conv1d_update` fallbacks on
-  `modeling_qwen3_5`/`modeling_qwen3_next`. No-op off-MPS/off-Darwin; enabled
-  by default in train/eval entrypoints (`metal_kernels: true` in configs).
+- **Fused Metal kernels (MPS)** — `meowtrix/kernels/metal/` holds
+  runtime-compiled ObjC++/libtorch kernels (`conv1d.metal`, `gdr.metal` +
+  `conv1d_bridge.mm`). `meowtrix.kernels.enable_metal_kernels()` monkeypatches
+  the transformers `causal_conv1d_fn`/`causal_conv1d_update`/
+  `torch_recurrent_gated_delta_rule`/`torch_chunk_gated_delta_rule`
+  fallbacks on `modeling_qwen3_5`/`modeling_qwen3_next`. The conv1d autograd
+  wrapper keeps training differentiable (fused dx, torch dw/db). The
+  delta-rule paths are inference-only — under autograd they defer to the
+  reference. The L>1 sequential scan (`gdr_seq`) is near-parity with the
+  chunked reference but allocation-light; it is opt-in via
+  `MEOWTRIX_GDR_SEQ=1` while single-token calls (`L==1`, incl. loop-refined
+  decode) always take the fused `gdr_step`. No-op off-MPS/off-Darwin;
+  enabled by default in train/eval entrypoints (`metal_kernels: true`).
 
 ## Implementation status
 
@@ -38,8 +45,8 @@ checks were run unless they were.
 | Repo structure, configs, Justfile, uv env | Implemented |
 | `MeowtrixConfig` | Implemented — `__getattr__` falls back to `backbone_config` for hybrid-cache fields; verified on real weights. |
 | `MeowtrixForCausalLM` forward / recurrent span / `loop_gates` | Verified on `Qwen/Qwen3.5-0.8B` (CPU, bf16): `num_loops=1` generate() output is byte-identical to the stock `Qwen3_5ForCausalLM`; `num_loops=3` yields coherent, diverging text. Masks are built via `create_causal_mask` / `create_recurrent_attention_mask` per `block_type`; refinement loops (≥2) run fully detached (`past_key_values=None`) because the hybrid cache has no read-only mode (`update()` always appends). |
-| `generate()` path | Verified — 40-token decode incl. DeltaNet cached decode path; explicit `GenerationMixin` inheritance for transformers ≥4.50. `chunk_gated_delta_rule`/`fused_recurrent_gated_delta_rule` still fall back to reference PyTorch impls (Metal kernels TBD); conv1d is fused via `meowtrix.kernels`. |
-| `meowtrix/kernels/metal` | Implemented + verified vs transformers reference: conv fwd/dx/decode-update within bf16 ulp tolerance; decode update ~3-14x faster, fwd+bwd faster than `F.conv1d`+autograd path. Requires Xcode CLT + ninja (dev dep); extension JIT-compiles under `~/.cache/torch_extensions`. |
+| `generate()` path | Verified — 40-token decode incl. DeltaNet cached decode path; explicit `GenerationMixin` inheritance for transformers ≥4.50. `chunk_gated_delta_rule` falls back to reference PyTorch impls for L>1 (fused Metal `gdr_seq` opt-in via `MEOWTRIX_GDR_SEQ=1`); conv1d + single-token delta-rule fused via `meowtrix.kernels`. |
+| `meowtrix/kernels/metal` | Implemented + verified vs transformers reference: conv fwd/dx/decode-update and delta-rule step/scan within bf16/fp32 ulp tolerance. `gdr_step` ~6x faster per-layer; end-to-end `generate()` decode 26→34 tok/s (+31%) at `num_loops=3`. L>1 scan ~17% slower than chunked reference → opt-in `MEOWTRIX_GDR_SEQ=1`. Requires Xcode CLT + ninja (dev dep); extension JIT-compiles under `~/.cache/torch_extensions`. |
 | `abliterate.py` | Verified end-to-end on real weights — 48 projection weights ablated (`out_proj`/`o_proj`/`down_proj` across 24 layers), checkpoint saves + regenerates; `enable_thinking=True` confirmed in the chat template. |
 | `scripts/train.py` | Scaffold — TRL `SFTTrainer` + PEFT LoRA; `assistant_only_loss` requires a chat template with `{% generation %}` markers, disable it if the tokenizer template lacks them. Not yet run end-to-end. |
 | `scripts/export_hf.py` | Verified — export dir loads via `trust_remote_code=True` (321 tensors incl. `loop_gates`), generates coherently. |
