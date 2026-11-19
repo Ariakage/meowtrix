@@ -40,6 +40,13 @@ def main() -> None:
     ap.add_argument("--personas", type=Path, default=None)
     ap.add_argument("--persona-prob", type=float, default=0.0)
     ap.add_argument(
+        "--persona-prob-think",
+        type=float,
+        default=None,
+        help="separate injection prob for examples whose assistant contains "
+        "<think>; defaults to persona-prob",
+    )
+    ap.add_argument(
         "--persona-categories",
         default=None,
         help="comma-separated category filter (sweet,coding,agent,reasoning,variety)",
@@ -82,9 +89,16 @@ def main() -> None:
                 continue
             seen.add(digest)
             msgs = [dict(m) for m in row["messages"]]
+            has_think = any(
+                m["role"] == "assistant" and "<think>" in m.get("content", "")
+                for m in msgs
+            )
+            prob = args.persona_prob
+            if has_think and args.persona_prob_think is not None:
+                prob = args.persona_prob_think
             if (
                 personas
-                and rng.random() < args.persona_prob
+                and rng.random() < prob
                 and (not msgs or msgs[0]["role"] != "system")
             ):
                 msgs.insert(
