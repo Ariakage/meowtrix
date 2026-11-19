@@ -66,6 +66,14 @@ benchmark *ARGS:
 plot-benchmark RESULTS="eval/results/benchmark_loops.json":
     uv run python eval/plot_benchmark.py {{RESULTS}}
 
+# Plot the SFT training curve from a trainer log or trainer_state.json.
+plot-training *ARGS:
+    uv run python eval/plot_training.py {{ARGS}}
+
+# Evaluate every outputs/ checkpoint (GSM8K slice + persona probes) per epoch.
+eval-checkpoints *ARGS:
+    uv run python scripts/eval_checkpoints.py {{ARGS}}
+
 fmt:
     uvx ruff format .
 
