@@ -93,7 +93,7 @@ def main() -> None:
         gradient_accumulation_steps=tr_cfg.get("gradient_accumulation_steps", 16),
         learning_rate=tr_cfg.get("learning_rate", 1e-4),
         lr_scheduler_type=tr_cfg.get("lr_scheduler_type", "cosine"),
-        warmup_ratio=tr_cfg.get("warmup_ratio", 0.05),
+        warmup_steps=tr_cfg.get("warmup_steps", 20),
         logging_steps=tr_cfg.get("logging_steps", 10),
         save_strategy=tr_cfg.get("save_strategy", "epoch"),
         bf16=tr_cfg.get("bf16", True),

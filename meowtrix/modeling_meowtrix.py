@@ -22,7 +22,10 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM, PreTrainedModel
 from transformers.generation import GenerationMixin
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+)
 
 try:  # transformers >= 4.56 mask builders used by hybrid (DeltaNet + GQA) stacks
     from transformers.masking_utils import (
@@ -75,6 +78,26 @@ class LoopGates(nn.Module):
     def forward(self, base: torch.Tensor, refined: torch.Tensor, loop_index: int):
         """Mix a refined hidden state back into the residual stream."""
         return base + self.gate(loop_index) * (refined - base)
+
+
+class _TrunkView(nn.Module):
+    """Fused-head adapter: ``model.base_model(...)`` -> last_hidden_state.
+
+    TRL's fused LM head calls ``getattr(model, "base_model")`` expecting a
+    backbone whose forward returns ``.last_hidden_state``. This thin view
+    forwards to the owner's ``_trunk_forward`` so refinement loops (and
+    ``loop_gates`` gradients) stay inside the training path. ``_owner`` is
+    bound via ``object.__setattr__`` to keep it out of the module registry —
+    otherwise the owner would appear as a nested submodule of itself.
+    """
+
+    def __init__(self, owner: MeowtrixForCausalLM):
+        super().__init__()
+        object.__setattr__(self, "_owner", owner)
+
+    def forward(self, *args, **kwargs):
+        hidden, _ = self._owner._trunk_forward(*args, **kwargs)
+        return BaseModelOutputWithPast(last_hidden_state=hidden)
 
 
 @dataclass
@@ -153,6 +176,7 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
             config.backbone_config = backbone_cfg.to_dict()
         self.backbone = AutoModelForCausalLM.from_config(backbone_cfg, trust_remote_code=True)
         self.loop_gates = LoopGates(config.max_loops, config.loop_gate_init)
+        self._trunk_view = _TrunkView(self)
         self.post_init()
 
     # ------------------------------------------------------------------
@@ -184,6 +208,7 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
         model.loop_gates = LoopGates(config.max_loops, config.loop_gate_init).to(
             device=backbone.device, dtype=backbone.dtype
         )
+        model._trunk_view = _TrunkView(model)
         model.post_init()
         return model
 
@@ -238,6 +263,20 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
         return self.backbone.get_output_embeddings()
 
     # standard HF plumbing -------------------------------------------------
+    @property
+    def base_model(self):
+        """Trunk view for fused-head trainers (e.g. TRL's fused LM head).
+
+        Returns ``.last_hidden_state`` via ``_trunk_forward`` so the fused
+        per-token loss path trains through the recurrent refinement loops —
+        ``loop_gates`` receives gradients. Falls back to the raw backbone
+        before ``_trunk_view`` exists.
+        """
+        view = getattr(self, "_trunk_view", None)
+        if view is not None:
+            return view
+        return getattr(self, "backbone", self)
+
     def get_input_embeddings(self):
         return self.backbone.get_input_embeddings()
 
@@ -253,9 +292,10 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self._stack()
 
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None, **kwargs):
         self.backbone.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs=gradient_checkpointing_kwargs
+            gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
+            **kwargs,
         )
 
     def gradient_checkpointing_disable(self):
@@ -326,21 +366,20 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
             mask = mask + pad
         return mask
 
-    def forward(
+    def _trunk_forward(
         self,
         input_ids: torch.LongTensor | None = None,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
         past_key_values=None,
         inputs_embeds: torch.FloatTensor | None = None,
-        labels: torch.LongTensor | None = None,
         use_cache: bool | None = None,
         cache_position: torch.LongTensor | None = None,
-        logits_to_keep: int | torch.Tensor = 0,
         num_loops: int | None = None,
         output_loop_hiddens: bool = False,
         **kwargs,
-    ) -> MeowtrixCausalLMOutput:
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        """Run the full recurrent trunk; returns (hidden, loop_hiddens)."""
         stack = self._stack()
         num_loops = int(num_loops or self.config.num_loops)
         num_loops = max(1, min(num_loops, self.config.max_loops))
@@ -438,7 +477,35 @@ class MeowtrixForCausalLM(PreTrainedModel, GenerationMixin):
                 loop_hiddens.append(hidden)
         hidden = run_span(end, n_layers, hidden, past_key_values, use_cache)
         hidden = stack.norm(hidden)
+        return hidden, loop_hiddens
 
+    def forward(
+        self,
+        input_ids: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values=None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        use_cache: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
+        logits_to_keep: int | torch.Tensor = 0,
+        num_loops: int | None = None,
+        output_loop_hiddens: bool = False,
+        **kwargs,
+    ) -> MeowtrixCausalLMOutput:
+        hidden, loop_hiddens = self._trunk_forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            num_loops=num_loops,
+            output_loop_hiddens=output_loop_hiddens,
+            **kwargs,
+        )
         slice_indices = (
             slice(-logits_to_keep, None)
             if isinstance(logits_to_keep, int) and logits_to_keep > 0
